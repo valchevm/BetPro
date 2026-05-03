@@ -1834,12 +1834,6 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  // Bet Slip operations — must be defined BEFORE any early return to keep hook order stable
-  const slipKeys = useMemo(
-    () => new Set(((state?.betSlip) || []).map(l => `${l.matchId}|${l.market}`)),
-    [state?.betSlip]
-  );
-
   if (!state) {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
@@ -1853,6 +1847,9 @@ export default function App() {
 
   const openMatch = (m) => { setMatch(m); setRoute("match"); };
   const handleSetRoute = (r) => { setRoute(r); if (r !== "match") setMatch(null); };
+
+  // Bet Slip operations
+  const slipKeys = useMemo(() => new Set((state.betSlip || []).map(l => `${l.matchId}|${l.market}`)), [state.betSlip]);
 
   const handleAddToSlip = (m, market, label) => {
     const key = `${m.id}|${market}`;

@@ -372,16 +372,36 @@ const DEFAULT_STATE = {
   settings: { bgAnimation: true, notifications: true }
 };
 const STORAGE_KEY = "betprobg:state:v4";
-const loadState = async () => {
+// In-memory fallback if localStorage is blocked (sandboxed iframes, private mode)
+let memoryStore = {};
+const safeGetItem = (key) => {
   try {
-    if (!window.storage) return DEFAULT_STATE;
-    const r = await window.storage.get(STORAGE_KEY);
-    if (!r) return DEFAULT_STATE;
-    return { ...DEFAULT_STATE, ...JSON.parse(r.value) };
+    if (typeof window !== "undefined" && window.localStorage) {
+      return window.localStorage.getItem(key);
+    }
+  } catch {}
+  return memoryStore[key] || null;
+};
+const safeSetItem = (key, value) => {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      window.localStorage.setItem(key, value);
+      return;
+    }
+  } catch {}
+  memoryStore[key] = value;
+};
+
+const loadState = () => {
+  try {
+    const raw = safeGetItem(STORAGE_KEY);
+    if (!raw) return DEFAULT_STATE;
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_STATE, ...parsed };
   } catch { return DEFAULT_STATE; }
 };
-const saveState = async (s) => {
-  try { if (window.storage) await window.storage.set(STORAGE_KEY, JSON.stringify(s)); } catch {}
+const saveState = (s) => {
+  try { safeSetItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
 };
 const conf2color = (c) => ({
   "Very High": "text-emerald-400 bg-emerald-400/10 border-emerald-400/30",
@@ -510,25 +530,41 @@ const ConfirmModal = ({ msg, onCancel, onConfirm }) => {
 };
 
 /* Bottom-sheet style modal — header & footer ALWAYS visible.
-   Uses flex layout: header (fixed) + scrolling body + footer (fixed). */
+   Uses fixed positioning with calculated height so footer never gets cut off,
+   regardless of browser quirks with dvh/vh on mobile. */
 const BottomSheet = ({ children, footer, onClose, title, icon }) => (
-  <div className="fixed inset-0 z-50 bg-black/80 flex items-end sm:items-center justify-center" onClick={onClose}>
+  <div className="fixed inset-0 z-50 bg-black/80 flex items-end sm:items-center justify-center"
+       onClick={onClose}
+       style={{ touchAction: "none" }}>
     <div className="bg-slate-900 border-t border-x sm:border border-slate-700 sm:rounded-2xl rounded-t-2xl w-full sm:max-w-md flex flex-col overflow-hidden"
-         style={{ maxHeight: "92dvh", maxWidth: "100vw" }}
+         style={{
+           maxHeight: "85vh",
+           height: "auto",
+           maxWidth: "100vw",
+         }}
          onClick={(e) => e.stopPropagation()}>
-      {/* Header */}
+      {/* Header — fixed */}
       <div className="flex-shrink-0 bg-slate-900 flex items-center justify-between px-4 py-3 border-b border-slate-800">
-        <div className="flex items-center gap-2">{icon}<h3 className="font-bold text-base" style={{ fontFamily: "'Rajdhani', sans-serif" }}>{title}</h3></div>
-        <button onClick={onClose} className="text-slate-400 hover:text-white p-1"><X size={20} /></button>
+        <div className="flex items-center gap-2 min-w-0">
+          {icon}
+          <h3 className="font-bold text-base truncate" style={{ fontFamily: "'Rajdhani', sans-serif" }}>{title}</h3>
+        </div>
+        <button onClick={onClose} className="text-slate-400 hover:text-white p-1 -mr-1 flex-shrink-0">
+          <X size={22} />
+        </button>
       </div>
       {/* Scrollable body */}
-      <div className="flex-1 overflow-y-auto min-h-0 overscroll-contain">
+      <div className="flex-1 overflow-y-auto min-h-0 overscroll-contain"
+           style={{
+             WebkitOverflowScrolling: "touch",
+             paddingBottom: footer ? 0 : "max(20px, env(safe-area-inset-bottom, 0px))"
+           }}>
         {children}
       </div>
-      {/* Footer (always visible) */}
+      {/* Footer — fixed at bottom */}
       {footer && (
-        <div className="flex-shrink-0 border-t border-slate-800 px-4 py-3 bg-slate-900"
-             style={{ paddingBottom: "max(12px, calc(env(safe-area-inset-bottom, 0px) + 12px))" }}>
+        <div className="flex-shrink-0 border-t-2 border-slate-700 px-4 py-3 bg-slate-900 shadow-2xl"
+             style={{ paddingBottom: "max(16px, env(safe-area-inset-bottom, 0px))" }}>
           {footer}
         </div>
       )}
@@ -1797,7 +1833,8 @@ const ProfilePage = ({ settings, updateSettings, onResetData, onShowStandings })
 
 /* ==================== ROOT APP ==================== */
 export default function App() {
-  const [state, setState] = useState(null);
+  // Lazy initial state — runs once on mount, synchronously
+  const [state, setState] = useState(() => loadState());
   const [route, setRoute] = useState("home");
   const [match, setMatch] = useState(null);
   const [confirmModal, setConfirmModal] = useState(null);
@@ -1805,8 +1842,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [showSlip, setShowSlip] = useState(false);
 
-  useEffect(() => { loadState().then(setState); }, []);
-  useEffect(() => { if (state) saveState(state); }, [state]);
+  // Persist state to localStorage on every change
+  useEffect(() => { saveState(state); }, [state]);
 
   // Silent receiver — pulls from Supabase every 5 seconds
   useEffect(() => {
@@ -1815,7 +1852,6 @@ export default function App() {
       try {
         const arr = await fetchMatchesFromSupabase();
         if (cancelled) return;
-        // Deduplicate by id (defensive)
         const seen = new Set();
         const unique = [];
         for (const m of arr) {
@@ -1834,22 +1870,16 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  if (!state) {
-    return (
-      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
-        <div className="text-emerald-400 text-2xl animate-pulse">⚽</div>
-      </div>
-    );
-  }
+  const slipKeys = useMemo(
+    () => new Set((state.betSlip || []).map(l => `${l.matchId}|${l.market}`)),
+    [state.betSlip]
+  );
 
   const setLang = (l) => setState({ ...state, lang: l });
   const updateSettings = (patch) => setState({ ...state, settings: { ...state.settings, ...patch } });
 
   const openMatch = (m) => { setMatch(m); setRoute("match"); };
   const handleSetRoute = (r) => { setRoute(r); if (r !== "match") setMatch(null); };
-
-  // Bet Slip operations
-  const slipKeys = useMemo(() => new Set((state.betSlip || []).map(l => `${l.matchId}|${l.market}`)), [state.betSlip]);
 
   const handleAddToSlip = (m, market, label) => {
     const key = `${m.id}|${market}`;

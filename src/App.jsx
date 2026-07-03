@@ -11,7 +11,9 @@ import {
 import SharpDropModal from "./SharpDropModal.jsx";
 
 /* ==================== CONFIG (HIDDEN) ==================== */
-const ORACLE_URL = "https://gb975ca8378ff79-home.adb.eu-turin-1.oraclecloudapps.com/ords/admin/xgpro_fixtures_public/";
+// ✅ Клиентът вика само собствения ни /api/fixtures endpoint — Oracle
+// URL-ът живее единствено server-side в api/fixtures.js.
+const FIXTURES_API = "/api/fixtures";
 const FETCH_INTERVAL_SEC = 5;
 const FETCH_PAGE_LIMIT = 100;
 const FETCH_SAFETY_MAX = 5000;
@@ -33,7 +35,7 @@ const T = {
   predictions_today: { bg: "Прогнози за днес", en: "Today's predictions" },
   see_all_matches: { bg: "Виж всички мачове по държави", en: "View all matches by country" },
   ev_plus_predictions: { bg: "EV+ ПРОГНОЗИ", en: "EV+ PICKS" },
-  ev_plus_subtitle: { bg: "Стойностни залози от модела на OddAlerts", en: "Value picks from OddAlerts" },
+  ev_plus_subtitle: { bg: "Стойностни залози от нашия AI модел", en: "Value picks from our AI model" },
   new: { bg: "НОВО", en: "NEW" },
   latest_news: { bg: "Последни новини", en: "Latest news" },
   show_all: { bg: "Всички", en: "All" },
@@ -80,11 +82,18 @@ const T = {
   outcomes: { bg: "Изходи", en: "Outcomes" },
   top_scores: { bg: "Топ 8 резултата", en: "Top 8 scores" },
   avg_goals_match: { bg: "Средно голове", en: "Avg goals" },
-  ev_powered_by: { bg: "Powered by OddAlerts", en: "Powered by OddAlerts" },
-  ev_explainer: { bg: "Стойностни залози от модела на OddAlerts с по-висока вероятност от букмейкъра.", en: "Value picks from OddAlerts model with higher probability than the bookmaker." },
-  ev_coming_soon: { bg: "Идва скоро", en: "Coming soon" },
-  ev_api_message: { bg: "Активира се след свързване с OddAlerts API.", en: "Activates after OddAlerts API connection." },
-  ev_api_progress: { bg: "Работи се по интеграцията", en: "Integration in progress" },
+  ev_powered_by: { bg: "Задвижвано от BetPro AI", en: "Powered by BetPro AI" },
+  ev_explainer: { bg: "Стойностни залози — по-висока вероятност от нашия модел спрямо коефициента на букмейкъра.", en: "Value picks — higher probability from our model than the bookmaker's odds imply." },
+  ev_coming_soon: { bg: "Няма стойностни залози в момента", en: "No value picks right now" },
+  ev_api_message: { bg: "Провери отново по-късно или разшири филтрите.", en: "Check back later or widen your filters." },
+  ev_api_progress: { bg: "Сканиране на активни мачове…", en: "Scanning live matches…" },
+  ev_sort_recent: { bg: "Скоро добавени", en: "Recently added" },
+  ev_sort_value: { bg: "Стойност", en: "Value" },
+  ev_sort_odds: { bg: "Коефициент", en: "Odds" },
+  ev_filter_market: { bg: "Пазар", en: "Market" },
+  ev_filter_country: { bg: "Държава", en: "Country" },
+  ev_value_label: { bg: "Стойност", en: "Value" },
+  ev_prob_label: { bg: "Вероятност", en: "Probability" },
   pro_member: { bg: "PRO", en: "PRO" },
   watched: { bg: "Гледани", en: "Watched" },
   saved: { bg: "Запазени", en: "Saved" },
@@ -525,9 +534,9 @@ async function fetchMatchesFromOracle() {
   let safety = 0;
 
   while (hasMore && safety < FETCH_SAFETY_MAX) {
-    const url = `${ORACLE_URL}?limit=${FETCH_PAGE_LIMIT}&offset=${offset}`;
+    const url = `${FIXTURES_API}?limit=${FETCH_PAGE_LIMIT}&offset=${offset}`;
     const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) throw new Error("Oracle HTTP " + res.status);
+    if (!res.ok) throw new Error("Fixtures API HTTP " + res.status);
     const data = await res.json();
     const items = Array.isArray(data.items) ? data.items : [];
 
@@ -1135,10 +1144,80 @@ const FixturesPage = ({ openMatch, allMatches, loading, onAddToSlip, slipKeys })
 };
 
 /* ==================== EV+ PLACEHOLDER ==================== */
-const EVPlusPage = () => {
+// Нормализира кода на пазара към MARKET_LABELS ключовете (BTTS-No → BTTS_NO и т.н.)
+const normMarketKey = (code) => (code || "").replace(/-/g, "_").toUpperCase() === "BTTS_NO" ? "BTTS_NO" : code;
+
+// За кои пазари можем директно да добавим в кутията за залог (reuse на съществуващия handleAddToSlip)
+const SLIP_MAP = {
+  "1": { market: "1", oddsKey: "1", label: "1" },
+  "X": { market: "X", oddsKey: "X", label: "X" },
+  "2": { market: "2", oddsKey: "2", label: "2" },
+  "O2.5": { market: "Over 2.5", oddsKey: "over", label: "Over 2.5" },
+  "U2.5": { market: "Under 2.5", oddsKey: "under", label: "Under 2.5" },
+  "BTTS": { market: "BTTS", oddsKey: "btts_yes", label: "BTTS" },
+};
+
+const EV_MARKET_CHIPS = ["1", "X", "2", "O2.5", "U2.5", "BTTS", "BTTS-No"];
+
+const EVPlusPage = ({ allMatches = [], loading, openMatch, onAddToSlip, slipKeys }) => {
   const t = useT();
+  const { lang } = useContext(LangCtx);
+  const [marketFilter, setMarketFilter] = useState(new Set());   // празно = всички
+  const [countryFilter, setCountryFilter] = useState(new Set()); // празно = всички
+  const [showCountryPicker, setShowCountryPicker] = useState(false);
+  const [sortBy, setSortBy] = useState("value"); // "value" | "recent" | "odds"
+
+  // ── Изравняваме всички value bets от всички мачове в един плосък списък ──
+  const picks = useMemo(() => {
+    const out = [];
+    (allMatches || []).forEach((m) => {
+      if (!Array.isArray(m.valueBets) || !m.valueBets.length) return;
+      m.valueBets.forEach((vb) => {
+        out.push({
+          key: `${m.id}|${vb.market}`,
+          match: m,
+          market: vb.market,
+          prob: vb.prob,
+          odd: vb.odd,
+          impliedP: vb.impliedP,
+          edge: vb.edge,
+        });
+      });
+    });
+    return out;
+  }, [allMatches]);
+
+  const countries = useMemo(() => {
+    const set = new Map();
+    picks.forEach((p) => { if (p.match.countryInfo) set.set(p.match.countryInfo.code, p.match.countryInfo); });
+    return Array.from(set.values());
+  }, [picks]);
+
+  const filtered = useMemo(() => {
+    let list = picks;
+    if (marketFilter.size) list = list.filter((p) => marketFilter.has(p.market));
+    if (countryFilter.size) list = list.filter((p) => countryFilter.has(p.match.countryInfo?.code));
+    const sorted = [...list];
+    if (sortBy === "value") sorted.sort((a, b) => b.edge - a.edge);
+    else if (sortBy === "odds") sorted.sort((a, b) => b.odd - a.odd);
+    else sorted.sort((a, b) => new Date(a.match.timestamp || 0) - new Date(b.match.timestamp || 0));
+    return sorted;
+  }, [picks, marketFilter, countryFilter, sortBy]);
+
+  const toggleMarket = (mk) => {
+    const next = new Set(marketFilter);
+    next.has(mk) ? next.delete(mk) : next.add(mk);
+    setMarketFilter(next);
+  };
+  const toggleCountry = (code) => {
+    const next = new Set(countryFilter);
+    next.has(code) ? next.delete(code) : next.add(code);
+    setCountryFilter(next);
+  };
+
   return (
     <div className="pb-24 relative z-10 w-full">
+      {/* ── Header ── */}
       <div className="relative overflow-hidden bg-gradient-to-br from-amber-500/15 via-slate-900 to-slate-900 border-b border-amber-500/30 px-3 pt-5 pb-4">
         <div className="absolute -top-10 -right-10 w-40 h-40 bg-amber-500/20 rounded-full blur-3xl" />
         <div className="relative">
@@ -1148,22 +1227,107 @@ const EVPlusPage = () => {
               <h1 className="font-bold text-xl" style={{ fontFamily: "'Rajdhani', sans-serif" }}><span className="text-white">EV</span><span className="text-amber-400">+</span></h1>
               <p className="text-[10px] text-slate-400">{t("ev_powered_by")}</p>
             </div>
+            <span className="ml-auto text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/25 rounded-full px-2.5 py-1">{filtered.length}</span>
           </div>
           <p className="text-xs text-slate-300 leading-relaxed">{t("ev_explainer")}</p>
         </div>
       </div>
-      <div className="px-3 py-12">
-        <div className="bg-slate-900/60 border border-amber-500/30 rounded-2xl p-6 text-center max-w-sm mx-auto">
-          <div className="w-16 h-16 mx-auto bg-gradient-to-br from-amber-400/20 to-orange-500/20 rounded-2xl flex items-center justify-center mb-4">
-            <Zap size={32} className="text-amber-400 animate-pulse" fill="currentColor" />
-          </div>
-          <h2 className="font-bold text-lg mb-2" style={{ fontFamily: "'Rajdhani', sans-serif" }}>{t("ev_coming_soon")}</h2>
-          <p className="text-xs text-slate-400 leading-relaxed mb-3">{t("ev_api_message")}</p>
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-500/10 border border-amber-500/20 rounded-full">
-            <RefreshCw size={10} className="text-amber-400 animate-spin" style={{ animationDuration: "3s" }} />
-            <span className="text-[10px] text-amber-400 font-medium">{t("ev_api_progress")}</span>
-          </div>
+
+      {/* ── Market филтър чипове ── */}
+      <div className="px-3 pt-3 flex gap-1.5 overflow-x-auto no-scrollbar">
+        {EV_MARKET_CHIPS.map((mk) => {
+          const active = marketFilter.has(mk);
+          return (
+            <button key={mk} onClick={() => toggleMarket(mk)}
+              className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[11px] font-semibold border transition-colors ${
+                active ? "bg-amber-500 border-amber-400 text-slate-950" : "bg-slate-900 border-slate-800 text-slate-400"}`}>
+              {marketLabel(normMarketKey(mk), lang)}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Държава + сортиране ── */}
+      <div className="px-3 pt-2 flex items-center gap-2">
+        <button onClick={() => setShowCountryPicker((s) => !s)}
+          className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-[11px] font-semibold border ${
+            countryFilter.size ? "bg-amber-500/15 border-amber-500/40 text-amber-300" : "bg-slate-900 border-slate-800 text-slate-400"}`}>
+          <Globe size={12} />{t("ev_filter_country")}{countryFilter.size ? ` (${countryFilter.size})` : ""}
+          {showCountryPicker ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
+        <div className="ml-auto flex gap-1 bg-slate-900 border border-slate-800 rounded-full p-0.5">
+          {[["value", "ev_sort_value"], ["recent", "ev_sort_recent"], ["odds", "ev_sort_odds"]].map(([k, label]) => (
+            <button key={k} onClick={() => setSortBy(k)}
+              className={`px-2.5 py-1 rounded-full text-[10px] font-semibold ${sortBy === k ? "bg-amber-500 text-slate-950" : "text-slate-400"}`}>
+              {t(label)}
+            </button>
+          ))}
         </div>
+      </div>
+      {showCountryPicker && (
+        <div className="px-3 pt-2 flex flex-wrap gap-1.5">
+          {countries.map((c) => {
+            const active = countryFilter.has(c.code);
+            return (
+              <button key={c.code} onClick={() => toggleCountry(c.code)}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-semibold border ${
+                  active ? "bg-amber-500/20 border-amber-500/50 text-amber-300" : "bg-slate-900 border-slate-800 text-slate-400"}`}>
+                <span>{c.flag}</span><span>{c.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Списък ── */}
+      <div className="px-3 pt-3 space-y-2">
+        {loading && !picks.length && (
+          <div className="text-center py-10 text-xs text-slate-500">{t("ev_api_progress")}</div>
+        )}
+        {!loading && !filtered.length && (
+          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 text-center max-w-sm mx-auto mt-8">
+            <div className="w-16 h-16 mx-auto bg-gradient-to-br from-amber-400/20 to-orange-500/20 rounded-2xl flex items-center justify-center mb-4">
+              <Zap size={32} className="text-amber-400" fill="currentColor" />
+            </div>
+            <h2 className="font-bold text-lg mb-2" style={{ fontFamily: "'Rajdhani', sans-serif" }}>{t("ev_coming_soon")}</h2>
+            <p className="text-xs text-slate-400 leading-relaxed">{t("ev_api_message")}</p>
+          </div>
+        )}
+        {filtered.map((p) => {
+          const slip = SLIP_MAP[p.market];
+          const inSlip = slip && slipKeys?.has(`${p.match.id}|${slip.market}`);
+          return (
+            <div key={p.key}
+              onClick={() => openMatch(p.match)}
+              className="bg-slate-900 border border-slate-800 active:border-amber-500/40 rounded-2xl p-3 cursor-pointer">
+              <div className="flex items-center gap-1.5 mb-1.5 text-[10px] text-slate-500">
+                <span>{p.match.countryInfo?.flag}</span>
+                <span className="truncate">{p.match.league}</span>
+                <span className="ml-auto flex items-center gap-1"><Clock size={10} />{p.match.date} {p.match.time}</span>
+              </div>
+              <div className="text-sm font-semibold text-white mb-2 truncate">{p.match.home} <span className="text-slate-600">vs</span> {p.match.away}</div>
+              <div className="flex items-center gap-2">
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-2 py-1">
+                  <span className="text-[10px] text-amber-400 font-bold">{marketLabel(normMarketKey(p.market), lang)}</span>
+                </div>
+                <div className="text-[11px] text-slate-400">{t("ev_prob_label")} <b className="text-white">{Math.round(p.prob)}%</b></div>
+                <div className="text-[11px] text-slate-400">@<b className="text-white">{p.odd?.toFixed(2)}</b></div>
+                <div className="ml-auto flex items-center gap-1 bg-emerald-500/10 border border-emerald-500/30 rounded-full px-2 py-0.5">
+                  <TrendingUp size={10} className="text-emerald-400" />
+                  <span className="text-[11px] font-bold text-emerald-400">+{p.edge?.toFixed(1)}%</span>
+                </div>
+              </div>
+              {slip && onAddToSlip && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onAddToSlip(p.match, slip.market, slip.label); }}
+                  className={`mt-2 w-full py-1.5 rounded-lg text-[10px] font-semibold border ${
+                    inSlip ? "bg-amber-500/20 border-amber-400 text-amber-300" : "bg-slate-800/60 border-slate-700 text-slate-300"}`}>
+                  {inSlip ? "✓ " + t("nav_bets") : "+ " + t("nav_bets")}
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -2535,7 +2699,10 @@ export default function App() {
                     onDeleteBet={handleDeleteBet} onDeleteBank={handleDeleteBank}
                     onOpenSlip={() => setShowSlip(true)} slipCount={slipCount} />
         )}
-        {route === "evplus" && <EVPlusPage />}
+        {route === "evplus" && (
+          <EVPlusPage allMatches={matches} loading={loading} openMatch={openMatch}
+                      onAddToSlip={handleAddToSlip} slipKeys={slipKeys} />
+        )}
         {route === "match" && match && (
           <MatchPage match={match} onBack={() => setRoute("fixtures")}
                      onAddToSlip={handleAddToSlip} slipKeys={slipKeys} />

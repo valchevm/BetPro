@@ -18,8 +18,9 @@ const FETCH_INTERVAL_SEC = 5;
 const FETCH_PAGE_LIMIT = 100;
 const FETCH_SAFETY_MAX = 5000;
 // How long a match remains visible after kickoff before being auto-hidden.
-// 210 min = 3h 30min — enough to cover 90 min play + halftime + injury time + extra time/penalties + buffer.
-const MATCH_LINGER_MINUTES = 210;
+// 120 min — синхронизирано с expires_at (kickoff+120мин), който xAPEX
+// задава при публикуване в xgpro_fixtures_public.
+const MATCH_LINGER_MINUTES = 120;
 
 /* ==================== I18N ==================== */
 const T = {

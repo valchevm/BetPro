@@ -95,6 +95,8 @@ const T = {
   ev_filter_country: { bg: "Държава", en: "Country" },
   ev_value_label: { bg: "Стойност", en: "Value" },
   ev_prob_label: { bg: "Вероятност", en: "Probability" },
+  ev_building: { bg: "EV+ се изгражда", en: "EV+ is being built" },
+  ev_building_sub: { bg: "Мачовете вече текат в „Мачове\u201c — EV+ анализът идва скоро.", en: "Matches are already flowing in \"Matches\" — EV+ analysis is coming soon." },
   pro_member: { bg: "PRO", en: "PRO" },
   watched: { bg: "Гледани", en: "Watched" },
   saved: { bg: "Запазени", en: "Saved" },
@@ -1160,6 +1162,11 @@ const SLIP_MAP = {
 
 const EV_MARKET_CHIPS = ["1", "X", "2", "O2.5", "U2.5", "BTTS", "BTTS-No"];
 
+// 🚧 EV+ фийдът от xAPEX (value_bets на бързия класификатор) е ИЗКЛЮЧЕН
+// временно — мачовете продължават да отиват нормално в "Мачове" таба.
+// EV+ ще се захрани от отделен, специализиран pipeline в xAPEX по-късно.
+const EV_FEED_ENABLED = false;
+
 const EVPlusPage = ({ allMatches = [], loading, openMatch, onAddToSlip, slipKeys }) => {
   const t = useT();
   const { lang } = useContext(LangCtx);
@@ -1170,6 +1177,7 @@ const EVPlusPage = ({ allMatches = [], loading, openMatch, onAddToSlip, slipKeys
 
   // ── Изравняваме всички value bets от всички мачове в един плосък списък ──
   const picks = useMemo(() => {
+    if (!EV_FEED_ENABLED) return [];
     const out = [];
     (allMatches || []).forEach((m) => {
       if (!Array.isArray(m.valueBets) || !m.valueBets.length) return;
@@ -1282,7 +1290,7 @@ const EVPlusPage = ({ allMatches = [], loading, openMatch, onAddToSlip, slipKeys
 
       {/* ── Списък ── */}
       <div className="px-3 pt-3 space-y-2">
-        {loading && !picks.length && (
+        {loading && !picks.length && EV_FEED_ENABLED && (
           <div className="text-center py-10 text-xs text-slate-500">{t("ev_api_progress")}</div>
         )}
         {!loading && !filtered.length && (
@@ -1290,8 +1298,12 @@ const EVPlusPage = ({ allMatches = [], loading, openMatch, onAddToSlip, slipKeys
             <div className="w-16 h-16 mx-auto bg-gradient-to-br from-amber-400/20 to-orange-500/20 rounded-2xl flex items-center justify-center mb-4">
               <Zap size={32} className="text-amber-400" fill="currentColor" />
             </div>
-            <h2 className="font-bold text-lg mb-2" style={{ fontFamily: "'Rajdhani', sans-serif" }}>{t("ev_coming_soon")}</h2>
-            <p className="text-xs text-slate-400 leading-relaxed">{t("ev_api_message")}</p>
+            <h2 className="font-bold text-lg mb-2" style={{ fontFamily: "'Rajdhani', sans-serif" }}>
+              {EV_FEED_ENABLED ? t("ev_coming_soon") : t("ev_building")}
+            </h2>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              {EV_FEED_ENABLED ? t("ev_api_message") : t("ev_building_sub")}
+            </p>
           </div>
         )}
         {filtered.map((p) => {

@@ -403,8 +403,13 @@ function normalizeFromOracle(raw) {
   // Fallback chain: Bet365 → Oracle odds_* column → null (display as N/A)
   const bet365 = extractBet365Odds(multiBookOdds);
   const pickOdd = (b365, oraColumn) => {
-    if (typeof b365 === "number" && b365 > 0) return b365;
-    if (typeof oraColumn === "number" && oraColumn > 0) return oraColumn;
+    const b365n = Number(b365);
+    if (Number.isFinite(b365n) && b365n > 0) return b365n;
+    // ✅ Oracle може да върне числовите колони като string в зависимост
+    // от типа им — coerce вместо strict typeof, иначе валидни стойности
+    // се губят и показват N/A.
+    const oraN = Number(oraColumn);
+    if (Number.isFinite(oraN) && oraN > 0) return oraN;
     return null;
   };
 
